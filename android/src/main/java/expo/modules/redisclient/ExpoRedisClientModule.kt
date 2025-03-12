@@ -15,20 +15,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.TimeUnit
+import java.time.Duration
 
-// Custom exceptions for better error handling
-class RedisModuleException(message: String, val code: String = "ERR_REDIS_GENERIC") : 
-    CodedException(message, code)
-
-class RedisConnectionError(message: String) : 
-    RedisModuleException(message, "ERR_REDIS_CONNECTION")
-
-class RedisTimeoutError(message: String) : 
-    RedisModuleException(message, "ERR_REDIS_TIMEOUT")
-
-class RedisOperationError(message: String) : 
-    RedisModuleException(message, "ERR_REDIS_OPERATION")
+// Custom exception for Redis operations
+class RedisModuleException(message: String, cause: Throwable? = null) : 
+    CodedException(message, "ERR_REDIS_GENERIC", cause)
 
 class ExpoRedisClientModule : Module() {
   private val TAG = "ExpoRedisClient"
@@ -38,7 +29,7 @@ class ExpoRedisClientModule : Module() {
   private val subscribers = ConcurrentHashMap<String, MutableList<(String) -> Unit>>()
   
   // Connection timeout (in seconds)
-  private val CONNECTION_TIMEOUT = 5L
+  private val CONNECTION_TIMEOUT = Duration.ofSeconds(5)
 
   // Each module class must implement the definition function. The definition consists of components
   // that describes the module's functionality and behavior.
@@ -55,7 +46,7 @@ class ExpoRedisClientModule : Module() {
         return@Function "system"
       } catch (e: Exception) {
         Log.e(TAG, "Error in getTheme: ${e.message}")
-        throw RedisOperationError("Failed to get theme: ${e.message}")
+        throw RedisModuleException("Failed to get theme: ${e.message}")
       }
     }
 
@@ -73,17 +64,17 @@ class ExpoRedisClientModule : Module() {
           pubSubConnection = redisClient?.connectPubSub()
             ?.apply { 
               // Set timeout for commands
-              setTimeout(CONNECTION_TIMEOUT, TimeUnit.SECONDS)
+              setTimeout(CONNECTION_TIMEOUT)
             }
           pubSubCommands = pubSubConnection?.sync()
         } catch (e: RedisConnectionException) {
           safeDisconnect()
           Log.e(TAG, "Redis connection error: ${e.message}")
-          throw RedisConnectionError("Failed to establish Redis connection: ${e.message}")
+          throw RedisModuleException("Failed to establish Redis connection: ${e.message}", e)
         } catch (e: RedisCommandTimeoutException) {
           safeDisconnect()
           Log.e(TAG, "Redis connection timeout: ${e.message}")
-          throw RedisTimeoutError("Redis connection timed out: ${e.message}")
+          throw RedisModuleException("Redis connection timed out: ${e.message}", e)
         }
         
         // Set up the pub/sub listener
@@ -137,7 +128,7 @@ class ExpoRedisClientModule : Module() {
         throw e
       } catch (e: Exception) {
         Log.e(TAG, "Error connecting to Redis: ${e.message}")
-        throw RedisConnectionError("Failed to connect to Redis: ${e.message}")
+        throw RedisModuleException("Failed to connect to Redis: ${e.message}", e)
       }
     }
     
@@ -148,7 +139,7 @@ class ExpoRedisClientModule : Module() {
         return@AsyncFunction "Disconnected from Redis server"
       } catch (e: Exception) {
         Log.e(TAG, "Error during disconnect: ${e.message}")
-        throw RedisOperationError("Failed to disconnect from Redis: ${e.message}")
+        throw RedisModuleException("Failed to disconnect from Redis: ${e.message}", e)
       }
     }
     
@@ -160,10 +151,10 @@ class ExpoRedisClientModule : Module() {
         return@AsyncFunction "Subscribed to channel: $channel"
       } catch (e: RedisException) {
         Log.e(TAG, "Redis error on subscribe: ${e.message}")
-        throw RedisOperationError("Failed to subscribe to channel $channel: ${e.message}")
+        throw RedisModuleException("Failed to subscribe to channel $channel: ${e.message}", e)
       } catch (e: Exception) {
         Log.e(TAG, "Error on subscribe: ${e.message}")
-        throw RedisOperationError("Failed to subscribe to channel $channel: ${e.message}")
+        throw RedisModuleException("Failed to subscribe to channel $channel: ${e.message}", e)
       }
     }
     
@@ -176,10 +167,10 @@ class ExpoRedisClientModule : Module() {
         return@AsyncFunction "Unsubscribed from channel: $channel"
       } catch (e: RedisException) {
         Log.e(TAG, "Redis error on unsubscribe: ${e.message}")
-        throw RedisOperationError("Failed to unsubscribe from channel $channel: ${e.message}")
+        throw RedisModuleException("Failed to unsubscribe from channel $channel: ${e.message}", e)
       } catch (e: Exception) {
         Log.e(TAG, "Error on unsubscribe: ${e.message}")
-        throw RedisOperationError("Failed to unsubscribe from channel $channel: ${e.message}")
+        throw RedisModuleException("Failed to unsubscribe from channel $channel: ${e.message}", e)
       }
     }
     
@@ -191,10 +182,10 @@ class ExpoRedisClientModule : Module() {
         return@AsyncFunction "Subscribed to pattern: $pattern"
       } catch (e: RedisException) {
         Log.e(TAG, "Redis error on pattern subscribe: ${e.message}")
-        throw RedisOperationError("Failed to subscribe to pattern $pattern: ${e.message}")
+        throw RedisModuleException("Failed to subscribe to pattern $pattern: ${e.message}", e)
       } catch (e: Exception) {
         Log.e(TAG, "Error on pattern subscribe: ${e.message}")
-        throw RedisOperationError("Failed to subscribe to pattern $pattern: ${e.message}")
+        throw RedisModuleException("Failed to subscribe to pattern $pattern: ${e.message}", e)
       }
     }
     
@@ -207,10 +198,10 @@ class ExpoRedisClientModule : Module() {
         return@AsyncFunction "Unsubscribed from pattern: $pattern"
       } catch (e: RedisException) {
         Log.e(TAG, "Redis error on pattern unsubscribe: ${e.message}")
-        throw RedisOperationError("Failed to unsubscribe from pattern $pattern: ${e.message}")
+        throw RedisModuleException("Failed to unsubscribe from pattern $pattern: ${e.message}", e)
       } catch (e: Exception) {
         Log.e(TAG, "Error on pattern unsubscribe: ${e.message}")
-        throw RedisOperationError("Failed to unsubscribe from pattern $pattern: ${e.message}")
+        throw RedisModuleException("Failed to unsubscribe from pattern $pattern: ${e.message}", e)
       }
     }
     
@@ -219,7 +210,7 @@ class ExpoRedisClientModule : Module() {
       try {
         ensureConnected()
         val connection = redisClient?.connect()
-          ?.apply { setTimeout(CONNECTION_TIMEOUT, TimeUnit.SECONDS) }
+          ?.apply { setTimeout(CONNECTION_TIMEOUT) }
         
         val syncCommands = connection?.sync()
         val result = syncCommands?.publish(channel, message)
@@ -227,13 +218,13 @@ class ExpoRedisClientModule : Module() {
         return@AsyncFunction "Published message to $channel, delivered to $result subscribers"
       } catch (e: RedisCommandTimeoutException) {
         Log.e(TAG, "Redis publish operation timed out: ${e.message}")
-        throw RedisTimeoutError("Publish operation timed out: ${e.message}")
+        throw RedisModuleException("Publish operation timed out: ${e.message}", e)
       } catch (e: RedisException) {
         Log.e(TAG, "Redis error on publish: ${e.message}")
-        throw RedisOperationError("Failed to publish to channel $channel: ${e.message}")
+        throw RedisModuleException("Failed to publish to channel $channel: ${e.message}", e)
       } catch (e: Exception) {
         Log.e(TAG, "Error on publish: ${e.message}")
-        throw RedisOperationError("Failed to publish to channel $channel: ${e.message}")
+        throw RedisModuleException("Failed to publish to channel $channel: ${e.message}", e)
       }
     }
     
@@ -247,7 +238,7 @@ class ExpoRedisClientModule : Module() {
         return@Function "Added listener for channel: $channel"
       } catch (e: Exception) {
         Log.e(TAG, "Error adding listener: ${e.message}")
-        throw RedisOperationError("Failed to add listener for channel $channel: ${e.message}")
+        throw RedisModuleException("Failed to add listener for channel $channel: ${e.message}", e)
       }
     }
     
@@ -258,7 +249,7 @@ class ExpoRedisClientModule : Module() {
         return@Function "Removed all listeners for channel: $channel"
       } catch (e: Exception) {
         Log.e(TAG, "Error removing listeners: ${e.message}")
-        throw RedisOperationError("Failed to remove listeners for channel $channel: ${e.message}")
+        throw RedisModuleException("Failed to remove listeners for channel $channel: ${e.message}", e)
       }
     }
   }
@@ -281,7 +272,7 @@ class ExpoRedisClientModule : Module() {
   // Helper method to check if connected and throw if not
   private fun ensureConnected() {
     if (redisClient == null || pubSubConnection == null) {
-      throw RedisConnectionError("Not connected to Redis server. Call connect() first.")
+      throw RedisModuleException("Not connected to Redis server. Call connect() first.")
     }
   }
 }
