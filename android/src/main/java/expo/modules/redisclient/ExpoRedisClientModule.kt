@@ -6,7 +6,6 @@ import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.AppContext
-import expo.modules.kotlin.modules.EventEmitter
 import io.lettuce.core.RedisClient
 import io.lettuce.core.RedisCommandTimeoutException
 import io.lettuce.core.RedisConnectionException
@@ -30,9 +29,6 @@ class ExpoRedisClientModule : Module() {
   private var pubSubConnection: StatefulRedisPubSubConnection<String, String>? = null
   private var pubSubCommands: RedisPubSubCommands<String, String>? = null
   private val CONNECTION_TIMEOUT = Duration.ofSeconds(5)
-
-  // Use EventEmitter for callbacks instead of function references
-  private val eventEmitter by lazy { appContext.eventEmitter }
   
   override fun definition() = ModuleDefinition {
     Name("ExpoRedisClient")
@@ -77,10 +73,13 @@ class ExpoRedisClientModule : Module() {
         // Set up the pub/sub listener
         pubSubConnection?.addListener(object : RedisPubSubListener<String, String> {
           override fun message(channel: String, message: String) {
-            // Use the EventEmitter to send messages to JS
+            // Use sendEvent to emit events to JS
             CoroutineScope(Dispatchers.Main).launch {
               try {
-                eventEmitter.emit(channel, mapOf("message" to message))
+                sendEvent("message", mapOf(
+                  "channel" to channel,
+                  "message" to message
+                ))
               } catch (e: Exception) {
                 Log.e(TAG, "Error emitting message for channel $channel: ${e.message}")
               }
@@ -91,7 +90,8 @@ class ExpoRedisClientModule : Module() {
             // Pattern subscription messages handled here
             CoroutineScope(Dispatchers.Main).launch {
               try {
-                eventEmitter.emit(pattern, mapOf(
+                sendEvent("patternMessage", mapOf(
+                  "pattern" to pattern,
                   "channel" to channel,
                   "message" to message
                 ))
@@ -222,8 +222,9 @@ class ExpoRedisClientModule : Module() {
       }
     }
     
-    // Add event listeners
-    Events("*") // Allow any event name for Redis channels
+    // Define events that this module can emit
+    OnEvent("message")
+    OnEvent("patternMessage")
   }
   
   // Helper method to disconnect from Redis safely

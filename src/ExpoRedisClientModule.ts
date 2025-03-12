@@ -1,5 +1,4 @@
-import { requireNativeModule } from 'expo-modules-core';
-import { EventEmitter } from 'expo-modules-core';
+import { requireNativeModule, EventEmitter } from 'expo-modules-core';
 import { Platform, ToastAndroid } from 'react-native';
 import * as Notifications from 'expo-notifications';
 
@@ -21,12 +20,12 @@ export interface RedisConfig {
 /**
  * Message listener callback type
  */
-export type MessageListener = (message: string) => void;
+export type MessageListener = (channel: string, message: string) => void;
 
 /**
  * Pattern message listener callback type
  */
-export type PatternMessageListener = (channel: string, message: string) => void;
+export type PatternMessageListener = (pattern: string, channel: string, message: string) => void;
 
 /**
  * Toast notification helper
@@ -67,13 +66,53 @@ const withErrorHandling = async (operation: () => Promise<any>, errorPrefix: str
 
 class RedisClient {
   private emitter: EventEmitter;
-  private listeners: Record<string, Set<MessageListener | PatternMessageListener>>;
+  private channelListeners: Set<MessageListener>;
+  private patternListeners: Set<PatternMessageListener>;
   private isConnected: boolean;
 
   constructor() {
     this.emitter = new EventEmitter(ExpoRedisClient);
-    this.listeners = {};
+    this.channelListeners = new Set();
+    this.patternListeners = new Set();
     this.isConnected = false;
+    
+    // Set up event listeners
+    this.setupEventListeners();
+  }
+  
+  /**
+   * Set up event listeners for Redis messages
+   */
+  private setupEventListeners() {
+    // Handle regular channel messages
+    this.emitter.addListener('message', (event: { channel: string, message: string }) => {
+      try {
+        this.channelListeners.forEach(listener => {
+          try {
+            listener(event.channel, event.message);
+          } catch (error: unknown) {
+            console.error('Error in channel message listener:', error);
+          }
+        });
+      } catch (error: unknown) {
+        console.error('Error dispatching channel message:', error);
+      }
+    });
+    
+    // Handle pattern messages
+    this.emitter.addListener('patternMessage', (event: { pattern: string, channel: string, message: string }) => {
+      try {
+        this.patternListeners.forEach(listener => {
+          try {
+            listener(event.pattern, event.channel, event.message);
+          } catch (error: unknown) {
+            console.error('Error in pattern message listener:', error);
+          }
+        });
+      } catch (error: unknown) {
+        console.error('Error dispatching pattern message:', error);
+      }
+    });
   }
 
   /**
@@ -121,10 +160,8 @@ class RedisClient {
       this.isConnected = false;
       
       // Clear all listeners
-      Object.keys(this.listeners).forEach(channel => {
-        this.emitter.removeAllListeners(channel);
-      });
-      this.listeners = {};
+      this.channelListeners.clear();
+      this.patternListeners.clear();
       
       return result;
     }, 'Redis disconnection failed');
@@ -167,10 +204,6 @@ class RedisClient {
       let result = '';
 
       for (const channel of channelArray) {
-        // Remove all listeners for this channel
-        this.emitter.removeAllListeners(channel);
-        delete this.listeners[channel];
-        
         result = await ExpoRedisClient.unsubscribe(channel);
       }
 
@@ -215,10 +248,6 @@ class RedisClient {
       let result = '';
 
       for (const pattern of patternArray) {
-        // Remove all listeners for this pattern
-        this.emitter.removeAllListeners(pattern);
-        delete this.listeners[pattern];
-        
         result = await ExpoRedisClient.punsubscribe(pattern);
       }
 
@@ -243,51 +272,21 @@ class RedisClient {
   }
 
   /**
-   * Add a message listener for a specific channel
-   * @param channel - Channel to listen to
+   * Add a message listener
    * @param callback - Function to call when a message is received
    * @returns Function to remove the listener
    */
-  addListener(channel: string, callback: MessageListener): () => void {
+  addMessageListener(callback: MessageListener): () => void {
     try {
-      if (!this.listeners[channel]) {
-        this.listeners[channel] = new Set();
-      }
+      this.channelListeners.add(callback);
       
-      // Create a wrapper function that extracts the message from the event data
-      const listenerFn = (event: { message: string }) => {
-        try {
-          callback(event.message);
-        } catch (error: unknown) {
-          console.error(`Error in listener for channel ${channel}:`, error);
-          showToast(`Listener error: ${
-            error instanceof Error ? error.message : 'Unknown error'
-          }`);
-        }
-      };
-      
-      // Store the listener in our tracking set
-      this.listeners[channel].add(callback);
-      
-      // Add the listener to the event emitter
-      this.emitter.addListener(channel, listenerFn);
-      
-      // Store reference to the listener function for removal
-      const removeSubscription = this.emitter.addListener(channel, listenerFn);
-      
-      // Return a function to remove this specific listener
+      // Return function to remove the listener
       return () => {
-        removeSubscription.remove();
-        if (this.listeners[channel]) {
-          this.listeners[channel].delete(callback);
-          if (this.listeners[channel].size === 0) {
-            delete this.listeners[channel];
-          }
-        }
+        this.channelListeners.delete(callback);
       };
     } catch (error: unknown) {
-      console.error(`Failed to add listener for channel ${channel}:`, error);
-      showToast(`Failed to add listener: ${
+      console.error('Failed to add message listener:', error);
+      showToast(`Failed to add message listener: ${
         error instanceof Error ? error.message : 'Unknown error'
       }`);
       return () => {}; // Return empty function on error
@@ -296,47 +295,20 @@ class RedisClient {
 
   /**
    * Add a pattern message listener
-   * @param pattern - Pattern to listen to
-   * @param callback - Function to call when a message is received
+   * @param callback - Function to call when a pattern message is received
    * @returns Function to remove the listener
    */
-  addPatternListener(pattern: string, callback: PatternMessageListener): () => void {
+  addPatternMessageListener(callback: PatternMessageListener): () => void {
     try {
-      if (!this.listeners[pattern]) {
-        this.listeners[pattern] = new Set();
-      }
+      this.patternListeners.add(callback);
       
-      // Create a wrapper function that extracts the channel and message from the event data
-      const listenerFn = (event: { channel: string, message: string }) => {
-        try {
-          callback(event.channel, event.message);
-        } catch (error: unknown) {
-          console.error(`Error in pattern listener for ${pattern}:`, error);
-          showToast(`Pattern listener error: ${
-            error instanceof Error ? error.message : 'Unknown error'
-          }`);
-        }
-      };
-      
-      // Store the listener in our tracking set
-      this.listeners[pattern].add(callback);
-      
-      // Store reference to the listener function for removal
-      const removeSubscription = this.emitter.addListener(pattern, listenerFn);
-      
-      // Return a function to remove this specific listener
+      // Return function to remove the listener
       return () => {
-        removeSubscription.remove();
-        if (this.listeners[pattern]) {
-          this.listeners[pattern].delete(callback);
-          if (this.listeners[pattern].size === 0) {
-            delete this.listeners[pattern];
-          }
-        }
+        this.patternListeners.delete(callback);
       };
     } catch (error: unknown) {
-      console.error(`Failed to add pattern listener for ${pattern}:`, error);
-      showToast(`Failed to add pattern listener: ${
+      console.error('Failed to add pattern message listener:', error);
+      showToast(`Failed to add pattern message listener: ${
         error instanceof Error ? error.message : 'Unknown error'
       }`);
       return () => {}; // Return empty function on error
@@ -344,19 +316,17 @@ class RedisClient {
   }
 
   /**
-   * Remove all listeners for a specific channel
-   * @param channel - Channel to remove listeners from
+   * Remove all message listeners
    */
-  removeAllListeners(channel: string): void {
-    try {
-      this.emitter.removeAllListeners(channel);
-      delete this.listeners[channel];
-    } catch (error: unknown) {
-      console.error(`Failed to remove listeners for channel ${channel}:`, error);
-      showToast(`Failed to remove listeners: ${
-        error instanceof Error ? error.message : 'Unknown error'
-      }`);
-    }
+  removeAllMessageListeners(): void {
+    this.channelListeners.clear();
+  }
+
+  /**
+   * Remove all pattern message listeners
+   */
+  removeAllPatternMessageListeners(): void {
+    this.patternListeners.clear();
   }
 
   /**
@@ -365,14 +335,6 @@ class RedisClient {
    */
   isConnectedToRedis(): boolean {
     return this.isConnected;
-  }
-
-  /**
-   * Get all active channel subscriptions
-   * @returns Array of channel names
-   */
-  getActiveSubscriptions(): string[] {
-    return Object.keys(this.listeners);
   }
 
   /**
