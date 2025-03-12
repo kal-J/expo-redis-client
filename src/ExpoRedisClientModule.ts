@@ -24,6 +24,11 @@ export interface RedisConfig {
 export type MessageListener = (message: string) => void;
 
 /**
+ * Pattern message listener callback type
+ */
+export type PatternMessageListener = (channel: string, message: string) => void;
+
+/**
  * Toast notification helper
  * Shows a toast notification on Android and a local notification on iOS
  */
@@ -38,7 +43,7 @@ const showToast = (message: string, duration = 'SHORT') => {
         body: message,
       },
       trigger: null, // Show immediately
-    }).catch((err: any) => console.error('Failed to show notification:', err));
+    }).catch(err => console.error('Failed to show notification:', err));
   }
 };
 
@@ -49,8 +54,11 @@ const showToast = (message: string, duration = 'SHORT') => {
 const withErrorHandling = async (operation: () => Promise<any>, errorPrefix: string) => {
   try {
     return await operation();
-  } catch (error: any) {
-    const errorMessage = `${errorPrefix}: ${error?.message || 'Unknown error'}`;
+  } catch (error: unknown) {
+    // Handle the unknown error type properly
+    const errorMessage = `${errorPrefix}: ${
+      error instanceof Error ? error.message : 'Unknown error'
+    }`;
     console.error(errorMessage);
     showToast(errorMessage);
     throw error; // Re-throw to allow caller to handle if needed
@@ -58,12 +66,12 @@ const withErrorHandling = async (operation: () => Promise<any>, errorPrefix: str
 };
 
 class RedisClient {
-  private emitter: typeof EventEmitter;
-  private listeners: Record<string, MessageListener[]>;
+  private emitter: EventEmitter;
+  private listeners: Record<string, Set<MessageListener | PatternMessageListener>>;
   private isConnected: boolean;
 
   constructor() {
-    this.emitter = ExpoRedisClient;
+    this.emitter = new EventEmitter(ExpoRedisClient);
     this.listeners = {};
     this.isConnected = false;
   }
@@ -111,7 +119,13 @@ class RedisClient {
     return withErrorHandling(async () => {
       const result = await ExpoRedisClient.disconnect();
       this.isConnected = false;
+      
+      // Clear all listeners
+      Object.keys(this.listeners).forEach(channel => {
+        this.emitter.removeAllListeners(channel);
+      });
       this.listeners = {};
+      
       return result;
     }, 'Redis disconnection failed');
   }
@@ -132,18 +146,6 @@ class RedisClient {
 
       for (const channel of channelArray) {
         result = await ExpoRedisClient.subscribe(channel);
-        ExpoRedisClient.addListener(channel, (message: string) => {
-          if (this.listeners[channel]) {
-            this.listeners[channel].forEach(callback => {
-              try {
-                callback(message);
-              } catch (error: any) {
-                console.error(`Error in listener for channel ${channel}:`, error);
-                showToast(`Listener error: ${error?.message || 'Unknown error'}`);
-              }
-            });
-          }
-        });
       }
 
       return result;
@@ -165,7 +167,10 @@ class RedisClient {
       let result = '';
 
       for (const channel of channelArray) {
+        // Remove all listeners for this channel
+        this.emitter.removeAllListeners(channel);
         delete this.listeners[channel];
+        
         result = await ExpoRedisClient.unsubscribe(channel);
       }
 
@@ -189,18 +194,6 @@ class RedisClient {
 
       for (const pattern of patternArray) {
         result = await ExpoRedisClient.psubscribe(pattern);
-        ExpoRedisClient.addListener(pattern, (message: string) => {
-          if (this.listeners[pattern]) {
-            this.listeners[pattern].forEach(callback => {
-              try {
-                callback(message);
-              } catch (error: any) {
-                console.error(`Error in listener for pattern ${pattern}:`, error);
-                showToast(`Listener error: ${error?.message || 'Unknown error'}`);
-              }
-            });
-          }
-        });
       }
 
       return result;
@@ -222,7 +215,10 @@ class RedisClient {
       let result = '';
 
       for (const pattern of patternArray) {
+        // Remove all listeners for this pattern
+        this.emitter.removeAllListeners(pattern);
         delete this.listeners[pattern];
+        
         result = await ExpoRedisClient.punsubscribe(pattern);
       }
 
@@ -253,33 +249,113 @@ class RedisClient {
    * @returns Function to remove the listener
    */
   addListener(channel: string, callback: MessageListener): () => void {
-    if (!this.listeners[channel]) {
-      this.listeners[channel] = [];
-    }
-    this.listeners[channel].push(callback);
-    
-    return () => {
-      this.listeners[channel] = this.listeners[channel].filter(cb => cb !== callback);
-      if (this.listeners[channel].length === 0) {
-        delete this.listeners[channel];
+    try {
+      if (!this.listeners[channel]) {
+        this.listeners[channel] = new Set();
       }
-    };
+      
+      // Create a wrapper function that extracts the message from the event data
+      const listenerFn = (event: { message: string }) => {
+        try {
+          callback(event.message);
+        } catch (error: unknown) {
+          console.error(`Error in listener for channel ${channel}:`, error);
+          showToast(`Listener error: ${
+            error instanceof Error ? error.message : 'Unknown error'
+          }`);
+        }
+      };
+      
+      // Store the listener in our tracking set
+      this.listeners[channel].add(callback);
+      
+      // Add the listener to the event emitter
+      this.emitter.addListener(channel, listenerFn);
+      
+      // Store reference to the listener function for removal
+      const removeSubscription = this.emitter.addListener(channel, listenerFn);
+      
+      // Return a function to remove this specific listener
+      return () => {
+        removeSubscription.remove();
+        if (this.listeners[channel]) {
+          this.listeners[channel].delete(callback);
+          if (this.listeners[channel].size === 0) {
+            delete this.listeners[channel];
+          }
+        }
+      };
+    } catch (error: unknown) {
+      console.error(`Failed to add listener for channel ${channel}:`, error);
+      showToast(`Failed to add listener: ${
+        error instanceof Error ? error.message : 'Unknown error'
+      }`);
+      return () => {}; // Return empty function on error
+    }
+  }
+
+  /**
+   * Add a pattern message listener
+   * @param pattern - Pattern to listen to
+   * @param callback - Function to call when a message is received
+   * @returns Function to remove the listener
+   */
+  addPatternListener(pattern: string, callback: PatternMessageListener): () => void {
+    try {
+      if (!this.listeners[pattern]) {
+        this.listeners[pattern] = new Set();
+      }
+      
+      // Create a wrapper function that extracts the channel and message from the event data
+      const listenerFn = (event: { channel: string, message: string }) => {
+        try {
+          callback(event.channel, event.message);
+        } catch (error: unknown) {
+          console.error(`Error in pattern listener for ${pattern}:`, error);
+          showToast(`Pattern listener error: ${
+            error instanceof Error ? error.message : 'Unknown error'
+          }`);
+        }
+      };
+      
+      // Store the listener in our tracking set
+      this.listeners[pattern].add(callback);
+      
+      // Store reference to the listener function for removal
+      const removeSubscription = this.emitter.addListener(pattern, listenerFn);
+      
+      // Return a function to remove this specific listener
+      return () => {
+        removeSubscription.remove();
+        if (this.listeners[pattern]) {
+          this.listeners[pattern].delete(callback);
+          if (this.listeners[pattern].size === 0) {
+            delete this.listeners[pattern];
+          }
+        }
+      };
+    } catch (error: unknown) {
+      console.error(`Failed to add pattern listener for ${pattern}:`, error);
+      showToast(`Failed to add pattern listener: ${
+        error instanceof Error ? error.message : 'Unknown error'
+      }`);
+      return () => {}; // Return empty function on error
+    }
   }
 
   /**
    * Remove all listeners for a specific channel
    * @param channel - Channel to remove listeners from
-   * @returns Status message
    */
-  removeAllListeners(channel: string): string {
+  removeAllListeners(channel: string): void {
     try {
+      this.emitter.removeAllListeners(channel);
       delete this.listeners[channel];
-      return ExpoRedisClient.removeAllListeners(channel);
-    } catch (error: any) {
-      const errorMessage = `Failed to remove listeners: ${error?.message || 'Unknown error'}`;
-      console.error(errorMessage);
-      showToast(errorMessage);
-      return 'Error removing listeners';
+    } catch (error: unknown) {
+      console.error(`Failed to remove listeners for channel ${channel}:`, error);
+      showToast(`Failed to remove listeners: ${
+        error instanceof Error ? error.message : 'Unknown error'
+      }`);
     }
   }
 
@@ -306,7 +382,7 @@ class RedisClient {
   getTheme(): string {
     try {
       return ExpoRedisClient.getTheme();
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('Failed to get theme:', error);
       return 'system';
     }

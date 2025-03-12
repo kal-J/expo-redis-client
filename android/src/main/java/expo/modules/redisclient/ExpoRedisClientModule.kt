@@ -4,6 +4,9 @@ import android.util.Log
 import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import expo.modules.kotlin.Promise
+import expo.modules.kotlin.AppContext
+import expo.modules.kotlin.modules.EventEmitter
 import io.lettuce.core.RedisClient
 import io.lettuce.core.RedisCommandTimeoutException
 import io.lettuce.core.RedisConnectionException
@@ -26,18 +29,12 @@ class ExpoRedisClientModule : Module() {
   private var redisClient: RedisClient? = null
   private var pubSubConnection: StatefulRedisPubSubConnection<String, String>? = null
   private var pubSubCommands: RedisPubSubCommands<String, String>? = null
-  private val subscribers = ConcurrentHashMap<String, MutableList<(String) -> Unit>>()
-  
-  // Connection timeout (in seconds)
   private val CONNECTION_TIMEOUT = Duration.ofSeconds(5)
 
-  // Each module class must implement the definition function. The definition consists of components
-  // that describes the module's functionality and behavior.
-  // See https://docs.expo.dev/modules/module-api for more details about available components.
+  // Use EventEmitter for callbacks instead of function references
+  private val eventEmitter by lazy { appContext.eventEmitter }
+  
   override fun definition() = ModuleDefinition {
-    // Sets the name of the module that JavaScript code will use to refer to the module. Takes a string as an argument.
-    // Can be inferred from module's class name, but it's recommended to set it explicitly for clarity.
-    // The module will be accessible from `requireNativeModule('ExpoRedisClient')` in JavaScript.
     Name("ExpoRedisClient")
 
     // Default method
@@ -80,27 +77,26 @@ class ExpoRedisClientModule : Module() {
         // Set up the pub/sub listener
         pubSubConnection?.addListener(object : RedisPubSubListener<String, String> {
           override fun message(channel: String, message: String) {
-            // Notify all subscribers for this channel
-            subscribers[channel]?.forEach { callback ->
-              CoroutineScope(Dispatchers.Main).launch {
-                try {
-                  callback(message)
-                } catch (e: Exception) {
-                  Log.e(TAG, "Error in message listener for channel $channel: ${e.message}")
-                }
+            // Use the EventEmitter to send messages to JS
+            CoroutineScope(Dispatchers.Main).launch {
+              try {
+                eventEmitter.emit(channel, mapOf("message" to message))
+              } catch (e: Exception) {
+                Log.e(TAG, "Error emitting message for channel $channel: ${e.message}")
               }
             }
           }
           
           override fun message(pattern: String, channel: String, message: String) {
             // Pattern subscription messages handled here
-            subscribers[pattern]?.forEach { callback ->
-              CoroutineScope(Dispatchers.Main).launch {
-                try {
-                  callback("$channel:$message")
-                } catch (e: Exception) {
-                  Log.e(TAG, "Error in pattern message listener for $pattern: ${e.message}")
-                }
+            CoroutineScope(Dispatchers.Main).launch {
+              try {
+                eventEmitter.emit(pattern, mapOf(
+                  "channel" to channel,
+                  "message" to message
+                ))
+              } catch (e: Exception) {
+                Log.e(TAG, "Error emitting pattern message for $pattern: ${e.message}")
               }
             }
           }
@@ -163,7 +159,6 @@ class ExpoRedisClientModule : Module() {
       try {
         ensureConnected()
         pubSubCommands?.unsubscribe(channel)
-        subscribers.remove(channel)
         return@AsyncFunction "Unsubscribed from channel: $channel"
       } catch (e: RedisException) {
         Log.e(TAG, "Redis error on unsubscribe: ${e.message}")
@@ -194,7 +189,6 @@ class ExpoRedisClientModule : Module() {
       try {
         ensureConnected()
         pubSubCommands?.punsubscribe(pattern)
-        subscribers.remove(pattern)
         return@AsyncFunction "Unsubscribed from pattern: $pattern"
       } catch (e: RedisException) {
         Log.e(TAG, "Redis error on pattern unsubscribe: ${e.message}")
@@ -228,30 +222,8 @@ class ExpoRedisClientModule : Module() {
       }
     }
     
-    // Add an event listener for a specific channel
-    Function("addListener") { channel: String, callback: (String) -> Unit ->
-      try {
-        if (!subscribers.containsKey(channel)) {
-          subscribers[channel] = mutableListOf()
-        }
-        subscribers[channel]?.add(callback)
-        return@Function "Added listener for channel: $channel"
-      } catch (e: Exception) {
-        Log.e(TAG, "Error adding listener: ${e.message}")
-        throw RedisModuleException("Failed to add listener for channel $channel: ${e.message}", e)
-      }
-    }
-    
-    // Remove all event listeners for a specific channel
-    Function("removeAllListeners") { channel: String ->
-      try {
-        subscribers.remove(channel)
-        return@Function "Removed all listeners for channel: $channel"
-      } catch (e: Exception) {
-        Log.e(TAG, "Error removing listeners: ${e.message}")
-        throw RedisModuleException("Failed to remove listeners for channel $channel: ${e.message}", e)
-      }
-    }
+    // Add event listeners
+    Events("*") // Allow any event name for Redis channels
   }
   
   // Helper method to disconnect from Redis safely
@@ -265,7 +237,6 @@ class ExpoRedisClientModule : Module() {
       pubSubConnection = null
       pubSubCommands = null
       redisClient = null
-      subscribers.clear()
     }
   }
   
