@@ -223,8 +223,7 @@ class ExpoRedisClientModule : Module() {
     }
     
     // Define events that this module can emit
-    OnEvent("message")
-    OnEvent("patternMessage")
+    Events("message", "patternMessage")
   }
   
   // Helper method to disconnect from Redis safely
