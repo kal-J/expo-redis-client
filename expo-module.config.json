@@ -1,0 +1,15 @@
+{
+  "platforms": [
+    "android"
+  ],
+  "apple": {
+    "modules": [
+      "ExpoRedisClientModule"
+    ]
+  },
+  "android": {
+    "modules": [
+      "expo.modules.redisclient.ExpoRedisClientModule"
+    ]
+  }
+}

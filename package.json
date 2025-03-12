@@ -1,0 +1,42 @@
+{
+  "name": "expo-redis-client",
+  "version": "0.1.0",
+  "description": "React native redis client",
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "scripts": {
+    "build": "expo-module build",
+    "clean": "expo-module clean",
+    "lint": "expo-module lint",
+    "test": "expo-module test",
+    "prepare": "expo-module prepare",
+    "prepublishOnly": "expo-module prepublishOnly",
+    "expo-module": "expo-module"
+  },
+  "keywords": [
+    "react-native",
+    "expo",
+    "expo-redis-client",
+    "ExpoRedisClient"
+  ],
+  "repository": "https://github.com/kal-J/expo-redis-client.git",
+  "bugs": {
+    "url": "https://github.com/kal-J/expo-redis-client.git/issues"
+  },
+  "author": "kal-J <kharljay15@gmail.com> (kal-J)",
+  "license": "MIT",
+  "homepage": "https://github.com/kal-J/expo-redis-client.git#readme",
+  "devDependencies": {
+    "@babel/core": "^7.26.10",
+    "@react-native/babel-preset": "^0.76.1",
+    "@types/react": "~18.2.79",
+    "expo": "~51.0.28",
+    "expo-module-scripts": "^4.0.3",
+    "react-native": "0.74.5"
+  },
+  "peerDependencies": {
+    "expo": "*",
+    "react": "*",
+    "react-native": "*"
+  }
+}
